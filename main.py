@@ -1,60 +1,145 @@
-from bs4 import BeautifulSoup
-import requests
-from fighters import fighters as fighters
+import tkinter as tk
+from tkinter import messagebox
+import pandas as pd
+import ttkbootstrap as ttk
+from ttkbootstrap.dialogs import Messagebox
 
-# get ufc database and events
-html_text = requests.get("http://ufcstats.com/statistics/events/completed?page=all").text
-soup = BeautifulSoup(html_text, "lxml")
-events = soup.find_all("a", class_ = "b-link b-link_style_black", href=True) # doesn't include ufc 1
 
-# add ufc 1
-html_text = requests.get("http://ufcstats.com/statistics/events/search?query=ufc%201&page=all").text
-soup = BeautifulSoup(html_text, "lxml")
-ufc1 = soup.find_all("a", class_ = "b-link b-link_style_black", href="http://ufcstats.com/event-details/6420efac0578988b")
-
-events.append(ufc1[0])
-
-# looping through each event in chronological order
-
-scores = {"win": 1, "draw": 0.5, "nc": False}
-
-for event in range(len(events) - 1, -1, -1):
+def update_suggestions(event):
+    """Update the suggestions based on the user input."""
+    search_term = entry.get().strip().lower()
     
-    print(f"{len(events) - event} / {len(events)} completed")  # loading progression
-    result_link = events[event]["href"]  # get event results link
-    text = requests.get(result_link).text
+    if not search_term:
+        suggestions_frame.place_forget()  # Hide the suggestions frame when there's no input
+        return
 
-    soup = BeautifulSoup(text, "lxml")
-    results = soup.find_all("i", class_ = "b-flag__text")  # possibilities: nc win draw 
-    names = soup.find_all("a", class_ = "b-link b-link_style_black")  # get fighter names
+    # Get fighter names and filter based on the search term
+    fighter_names = [name for name in all_fighter_names if search_term in name.lower()]
     
-    for i in range(len(names)//2 - 1, -1, -1): # each fight in chronological order
-        
-        fighter1_score = scores[results[i].text]
-
-        if fighter1_score:
-            
-            # opponents score
-            fighter2_score = 1 - fighter1_score
-
-            # names
-            fighter1 = names[i*2].text.strip()
-            fighter2 = names[(i*2)+1].text.strip()
-
-            if fighter1 == 0.5:
-                print(fighter1)
-
-            # calculate win likelihood
-            # win probibility -> P(A wins) = 1 / {1 + 10^[(RB - RA) / 400]}
-            fighter1_win_probibility = (1 + 10**((fighters[fighter2] - fighters[fighter1])/400))**-1
-            fighter2_win_probibility = 1 - fighter1_win_probibility
-
-            # calculate new elo -> New elo = elo + 32(score - win probiblity)
-            fighters[fighter1] = fighters[fighter1] + 32*(fighter1_score - fighter1_win_probibility)
-            fighters[fighter2] = fighters[fighter2] + 32*(fighter2_score - fighter2_win_probibility)
+    # Clear the listbox and insert the filtered names
+    listbox.delete(0, tk.END)
+    for name in fighter_names[:5]:  # Show only the top 5 suggestions
+        listbox.insert(tk.END, name)
+    
+    # Show the listbox if there are suggestions
+    if fighter_names:
+        suggestions_frame.place(x=entry.winfo_x(), y=entry.winfo_y() + entry.winfo_height() + 5)
+    else:
+        suggestions_frame.place_forget()  # Hide the listbox if no suggestions
 
 
-# print results
-result = {k: v for k, v in sorted(fighters.items(), key=lambda item: item[1], reverse=True)}
-for key in result:
-    print(f"{key}, {result[key]}")
+def on_select_fighter(event):
+    """Auto-fill the selected fighter name into the entry field."""
+    selected_fighter = listbox.get(listbox.curselection())
+    entry.delete(0, tk.END)
+    entry.insert(tk.END, selected_fighter)
+    suggestions_frame.place_forget()  # Hide the suggestions once a name is selected
+
+
+def show_fighter_data():
+    fighter_name = entry.get().strip()
+    if fighter_name == "":
+        Messagebox.show_error("Error", "Please enter a fighter's name.")
+        return
+
+    try:
+        # Load data from the CSV file
+        df = pd.read_csv("records.csv")
+    except FileNotFoundError:
+        Messagebox.show_error("Error", "The file 'records.csv' was not found.")
+        return
+    except Exception as e:
+        Messagebox.show_error("Error", f"An error occurred while reading the file: {e}")
+        return
+
+    # Validate that the required columns exist in the CSV
+    required_columns = {"Fighter", "Elo", "Opponent", "Change"}
+    if not required_columns.issubset(df.columns):
+        Messagebox.show_error(
+            "Error", f"The file must contain the following columns: {', '.join(required_columns)}"
+        )
+        return
+
+    # Standardize fighter names (remove extra spaces and make case-insensitive)
+    df["Fighter"] = df["Fighter"].str.strip().str.lower()
+    fighter_name = fighter_name.lower()
+
+    # Filter the data for the given fighter
+    fighter_data = df[df["Fighter"] == fighter_name]
+
+    # Clear previous results if any
+    for widget in results_frame.winfo_children():
+        widget.destroy()
+
+    if fighter_data.empty:
+        Messagebox.show_info("No Data", f"No data found for fighter: {fighter_name.title()}")
+    else:
+        # Display the fighter's data in the same window
+        result_label = ttk.Label(results_frame, text=f"Results for {fighter_name.title()}:")
+        result_label.pack(pady=10)
+
+        # Create a Treeview to display the data
+        tree = ttk.Treeview(results_frame, columns=list(fighter_data.columns), show="headings")
+        tree.pack(fill=tk.BOTH, expand=True)
+
+        # Set up the column headers
+        for col in fighter_data.columns:
+            tree.heading(col, text=col)
+            tree.column(col, width=100, anchor=tk.CENTER)
+
+        # Insert the data into the Treeview
+        for _, row in fighter_data.iterrows():
+            tree.insert("", tk.END, values=list(row))
+
+
+# Create the main application window with ttkbootstrap style
+root = ttk.Window(themename="darkly")
+root.title("Fighter Data Viewer")
+root.geometry("800x600")  # Set a larger window size to fit all elements
+root.minsize(800, 600)  # Set minimum size to ensure it is large enough for the widgets
+
+# Create the input field and button with modern styling
+frame = ttk.Frame(root, padding="20")
+frame.pack(fill=tk.BOTH, expand=True)
+
+label = ttk.Label(frame, text="Enter Fighter Name:", font=("Helvetica", 12))
+label.grid(row=0, column=0, padx=10, pady=5, sticky="w")
+
+entry = ttk.Entry(frame, font=("Helvetica", 12), bootstyle="info")
+entry.grid(row=0, column=1, padx=10, pady=5, sticky="ew")
+
+button = ttk.Button(frame, text="Search", bootstyle="success", command=show_fighter_data)
+button.grid(row=0, column=2, padx=10, pady=5)
+
+# Make the entry widget expand horizontally
+frame.grid_columnconfigure(1, weight=1)  # Make column 1 (entry) expand with window size
+
+# Create a frame for suggestions below the entry field
+suggestions_frame = ttk.Frame(root)
+suggestions_frame.place_forget()  # Hide it initially
+
+# Create the listbox for the suggestions
+listbox = tk.Listbox(suggestions_frame, height=5, width=40, selectmode=tk.SINGLE, font=("Helvetica", 12))
+listbox.bind("<ButtonRelease-1>", on_select_fighter)
+listbox.pack()
+
+# Load fighter names into the listbox
+try:
+    df = pd.read_csv("records.csv")
+    all_fighter_names = df["Fighter"].str.strip().str.title().drop_duplicates().tolist()
+except FileNotFoundError:
+    Messagebox.show_error("Error", "The file 'records.csv' was not found.")
+    all_fighter_names = []
+except Exception as e:
+    Messagebox.show_error("Error", f"An error occurred while reading the file: {e}")
+    all_fighter_names = []
+
+# Create a frame for the search results
+results_frame = ttk.Frame(root, padding="20")
+results_frame.pack(fill=tk.BOTH, expand=True)
+
+# Attach the event handler for updating suggestions
+entry.bind("<KeyRelease>", update_suggestions)
+
+# Start the Tkinter event loop
+root.mainloop()
